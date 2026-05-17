@@ -64,7 +64,7 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "login") -
     label = _PURPOSE_LABELS.get(purpose, "אימות")
 
     if not settings.smtp_host or not settings.smtp_user:
-        # Development fallback — print to console and return code for UI display
+        # SMTP not configured — log to console for server-side visibility
         logger.warning(
             "[EMAIL DEV FALLBACK] To: %s | Purpose: %s | OTP: %s",
             to_email,
@@ -74,7 +74,8 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "login") -
         print(f"\n{'='*50}")
         print(f"[OTP DEV] Email: {to_email}  |  Purpose: {purpose}  |  Code: {otp_code}")
         print(f"{'='*50}\n")
-        return otp_code
+        # Only expose code in API response when debug mode is on
+        return otp_code if settings.debug else None
 
     message = MIMEMultipart("alternative")
     message["Subject"] = f"קוד אימות ({label}) — מעקב הלוואות"
@@ -92,10 +93,12 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "login") -
             port=settings.smtp_port,
             username=settings.smtp_user,
             password=settings.smtp_password,
-            start_tls=True,
+            use_tls=True,  # SSL on port 465
         )
         return None
     except Exception as exc:
         logger.error("[EMAIL ERROR] Failed to send OTP email to %s: %s", to_email, exc)
-        # Return the code so the caller can expose it in dev_code (visible in logs/response)
-        return otp_code
+        # Only expose dev_code in debug/development mode
+        if settings.debug:
+            return otp_code
+        return None

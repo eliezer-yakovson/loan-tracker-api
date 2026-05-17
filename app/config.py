@@ -11,9 +11,12 @@ class Settings(BaseSettings):
     # CORS
     frontend_origin: str = ""  # e.g. https://loan-tracker.vercel.app
 
+    # Development mode — set DEBUG=true only locally; never in production
+    debug: bool = False
+
     # SMTP (email for OTP codes)
     smtp_host: str = ""
-    smtp_port: int = 587
+    smtp_port: int = 465
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from: str = ""

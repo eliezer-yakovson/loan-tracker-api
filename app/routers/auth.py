@@ -1,9 +1,10 @@
 import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,52 @@ from app.utils.email_utils import send_otp_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer_scheme = HTTPBearer(auto_error=False)
+
+# ── In-memory OTP rate limiters ────────────────────────────────────────────────
+# Maps email -> list of send timestamps (last 10 minutes)
+_otp_send_times: dict[str, list[float]] = defaultdict(list)
+_OTP_SEND_WINDOW = 600   # 10 minutes
+_OTP_SEND_MAX = 3        # max 3 OTP sends per window
+
+# Maps email -> [fail_count, window_start]
+_otp_fail_counts: dict[str, list] = defaultdict(lambda: [0, 0.0])
+_OTP_FAIL_WINDOW = 300   # 5 minutes
+_OTP_FAIL_MAX = 10       # max 10 failed attempts per window
+
+
+def _check_otp_send_rate(email: str) -> None:
+    now = time.monotonic()
+    times = _otp_send_times[email]
+    # Prune old timestamps
+    _otp_send_times[email] = [t for t in times if now - t < _OTP_SEND_WINDOW]
+    if len(_otp_send_times[email]) >= _OTP_SEND_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="שלחת יותר מדי קודות בזמן קצר. נסה שוב בעוד 10 דקות.",
+        )
+    _otp_send_times[email].append(now)
+
+
+def _check_otp_fail_rate(email: str) -> None:
+    now = time.monotonic()
+    count, window_start = _otp_fail_counts[email]
+    if now - window_start > _OTP_FAIL_WINDOW:
+        _otp_fail_counts[email] = [0, now]
+        return
+    if count >= _OTP_FAIL_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="יותר מדי ניסיונות כושלים. נסה שוב בעוד 5 דקות.",
+        )
+
+
+def _record_otp_fail(email: str) -> None:
+    now = time.monotonic()
+    count, window_start = _otp_fail_counts[email]
+    if now - window_start > _OTP_FAIL_WINDOW:
+        _otp_fail_counts[email] = [1, now]
+    else:
+        _otp_fail_counts[email] = [count + 1, window_start]
 
 
 # ── Dependency: get current authenticated user ─────────────────────────────────
@@ -82,6 +129,7 @@ async def _save_otp(session: AsyncSession, email: str, code: str, purpose: str) 
 async def _verify_otp(
     session: AsyncSession, email: str, code: str, purpose: str
 ) -> OTPCode:
+    _check_otp_fail_rate(email)
     result = await session.execute(
         select(OTPCode).where(
             OTPCode.email == email,
@@ -92,8 +140,10 @@ async def _verify_otp(
     )
     otp_row = result.scalar_one_or_none()
     if not otp_row:
+        _record_otp_fail(email)
         raise HTTPException(status_code=400, detail="קוד שגוי")
     if otp_is_expired(otp_row.expires_at):
+        _record_otp_fail(email)
         raise HTTPException(status_code=400, detail="הקוד פג תוקף, שלח קוד חדש")
     otp_row.used = True
     await session.commit()
@@ -107,17 +157,17 @@ async def register_send_otp(
     body: RegisterRequest,
     session: AsyncSession = Depends(get_db),
 ):
+    email = body.email.strip().lower()
+    _check_otp_send_rate(email)
     # Check if email already registered
-    result = await session.execute(select(User).where(User.email == body.email))
+    result = await session.execute(select(User).where(User.email == email))
     existing = result.scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail="כתובת המייל כבר רשומה במערכת")
 
     code = generate_otp()
-    # Store name temporarily in the code field as JSON? No — we store name in purpose payload.
-    # Simpler: store pending registration in OTPCode, name will be supplied again at verify step.
-    await _save_otp(session, body.email, code, "register")
-    dev_code = await send_otp_email(body.email, code, "register")
+    await _save_otp(session, email, code, "register")
+    dev_code = await send_otp_email(email, code, "register")
     response: dict = {"detail": "קוד נשלח למייל"}
     if dev_code is not None:
         response["dev_code"] = dev_code
@@ -131,17 +181,18 @@ async def register_verify(
     body: RegisterVerifyRequest,
     session: AsyncSession = Depends(get_db),
 ):
+    email = body.email.strip().lower()
     # Re-check email not already taken (race condition guard)
-    result = await session.execute(select(User).where(User.email == body.email))
+    result = await session.execute(select(User).where(User.email == email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="כתובת המייל כבר רשומה")
 
-    await _verify_otp(session, body.email, body.code, "register")
+    await _verify_otp(session, email, body.code, "register")
 
     now = datetime.now(timezone.utc).isoformat(timespec='seconds')
     user = User(
         id=str(uuid.uuid4()),
-        email=body.email,
+        email=email,
         name=body.name,
         created_at=now,
         is_active=True,
@@ -167,14 +218,16 @@ async def login_send_otp(
     body: SendOTPRequest,
     session: AsyncSession = Depends(get_db),
 ):
-    result = await session.execute(select(User).where(User.email == body.email))
+    email = body.email.strip().lower()
+    _check_otp_send_rate(email)
+    result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="לא נמצא משתמש עם מייל זה")
 
     code = generate_otp()
-    await _save_otp(session, body.email, code, "login")
-    dev_code = await send_otp_email(body.email, code, "login")
+    await _save_otp(session, email, code, "login")
+    dev_code = await send_otp_email(email, code, "login")
     response: dict = {"detail": "קוד נשלח למייל"}
     if dev_code is not None:
         response["dev_code"] = dev_code
@@ -188,9 +241,10 @@ async def login_verify(
     body: VerifyOTPRequest,
     session: AsyncSession = Depends(get_db),
 ):
-    await _verify_otp(session, body.email, body.code, "login")
+    email = body.email.strip().lower()
+    await _verify_otp(session, email, body.code, "login")
 
-    result = await session.execute(select(User).where(User.email == body.email))
+    result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="משתמש לא נמצא")
@@ -212,14 +266,16 @@ async def reset_send_otp(
     body: SendOTPRequest,
     session: AsyncSession = Depends(get_db),
 ):
-    result = await session.execute(select(User).where(User.email == body.email))
+    email = body.email.strip().lower()
+    _check_otp_send_rate(email)
+    result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     # Always return 200 even if email unknown (prevent user enumeration)
     dev_code: str | None = None
     if user and user.is_active:
         code = generate_otp()
-        await _save_otp(session, body.email, code, "reset")
-        dev_code = await send_otp_email(body.email, code, "reset")
+        await _save_otp(session, email, code, "reset")
+        dev_code = await send_otp_email(email, code, "reset")
     response: dict = {"detail": "אם המייל רשום, קוד נשלח אליו"}
     if dev_code is not None:
         response["dev_code"] = dev_code
@@ -233,9 +289,10 @@ async def reset_verify(
     body: VerifyOTPRequest,
     session: AsyncSession = Depends(get_db),
 ):
-    await _verify_otp(session, body.email, body.code, "reset")
+    email = body.email.strip().lower()
+    await _verify_otp(session, email, body.code, "reset")
 
-    result = await session.execute(select(User).where(User.email == body.email))
+    result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=404, detail="משתמש לא נמצא")
