@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     secret_key: str = "change-this-secret-key-in-production"
     token_expire_days: int = 7
 
+    # CORS
+    frontend_origin: str = ""  # e.g. https://loan-tracker.vercel.app
+
     # SMTP (email for OTP codes)
     smtp_host: str = ""
     smtp_port: int = 587

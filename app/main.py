@@ -28,15 +28,19 @@ app = FastAPI(
 )
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
-# Adjust allow_origins for your production domain.
+from app.config import settings as _settings
+_cors_origins = [
+    "http://localhost:5173",
+    "https://localhost:5173",
+    "http://localhost:3000",
+    "https://localhost:3000",
+]
+if _settings.frontend_origin:
+    _cors_origins.append(_settings.frontend_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",   # Vite dev server (HTTP)
-        "https://localhost:5173",  # Vite dev server (HTTPS)
-        "http://localhost:3000",
-        "https://localhost:3000",
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
