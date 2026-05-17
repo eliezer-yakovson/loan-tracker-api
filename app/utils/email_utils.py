@@ -85,12 +85,17 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "login") -
     message.attach(MIMEText(plain, "plain", "utf-8"))
     message.attach(MIMEText(_build_html(otp_code, purpose), "html", "utf-8"))
 
-    await aiosmtplib.send(
-        message,
-        hostname=settings.smtp_host,
-        port=settings.smtp_port,
-        username=settings.smtp_user,
-        password=settings.smtp_password,
-        start_tls=True,
-    )
-    return None
+    try:
+        await aiosmtplib.send(
+            message,
+            hostname=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_user,
+            password=settings.smtp_password,
+            start_tls=True,
+        )
+        return None
+    except Exception as exc:
+        logger.error("[EMAIL ERROR] Failed to send OTP email to %s: %s", to_email, exc)
+        # Return the code so the caller can expose it in dev_code (visible in logs/response)
+        return otp_code
