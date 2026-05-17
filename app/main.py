@@ -9,6 +9,7 @@ from app.db.engine import engine
 from app.routers import categories, loans, month_entries, sync
 from app.routers import auth as auth_router
 from app.routers import admin as admin_router
+from app.routers import error_logs as error_logs_router
 
 
 @asynccontextmanager
@@ -53,6 +54,7 @@ app.include_router(month_entries.router)
 app.include_router(sync.router)
 app.include_router(auth_router.router)
 app.include_router(admin_router.router)
+app.include_router(error_logs_router.router)
 
 
 @app.get("/health", tags=["health"])
