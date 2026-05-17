@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import app.models  # noqa: registers all ORM models with Base.metadata
+from app.config import settings as _settings
 from app.db.base import Base
 from app.db.engine import engine
 from app.routers import categories, loans, month_entries, sync
@@ -12,8 +13,20 @@ from app.routers import admin as admin_router
 from app.routers import error_logs as error_logs_router
 
 
+def _validate_startup_security() -> None:
+    """Fail fast if critical security settings are misconfigured."""
+    smtp_configured = bool(_settings.smtp_host and _settings.smtp_user)
+
+    if smtp_configured and _settings.debug:
+        raise RuntimeError(
+            "Security misconfiguration: DEBUG=true must not be used when SMTP is "
+            "configured (production environment). Set DEBUG=false."
+        )
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    _validate_startup_security()
     # On startup: create any tables that don't exist yet.
     # In production, use `alembic upgrade head` instead and remove this block.
     async with engine.begin() as conn:
@@ -29,7 +42,6 @@ app = FastAPI(
 )
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
-from app.config import settings as _settings
 _cors_origins = [
     "http://localhost:5173",
     "https://localhost:5173",

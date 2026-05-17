@@ -48,19 +48,27 @@ async def push_state(
     for loan in data.loans:
         await loan_repo.upsert(loan, user_id)
 
+    # Build the set of loan IDs that genuinely belong to this user AFTER the
+    # loan upserts above, so newly-synced loans are included.
+    user_loans_after_upsert = await loan_repo.get_all(user_id)
+    user_loan_ids_set = {loan.id for loan in user_loans_after_upsert}
+
     for entry in data.month_entries:
+        if entry.loan_id not in user_loan_ids_set:
+            # Silently skip entries that reference loans owned by other users.
+            # Raising here would expose information about foreign IDs, so we drop them.
+            continue
         await entry_repo.upsert(entry)
 
     await db.commit()
 
-    user_loans = await loan_repo.get_all(user_id)
-    user_loan_ids = [loan.id for loan in user_loans]
+    user_loan_ids = list(user_loan_ids_set)
     all_entries = await _get_entries_for_user(db, user_loan_ids)
 
     return AppStateOut(
         selected_month=data.selected_month,
         categories=await cat_repo.get_all(user_id),
-        loans=user_loans,
+        loans=user_loans_after_upsert,
         month_entries=all_entries,
     )
 

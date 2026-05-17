@@ -11,7 +11,7 @@ class OTPCode(Base):
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    code: Mapped[str] = mapped_column(String(6), nullable=False)
+    code: Mapped[str] = mapped_column(String(64), nullable=False)  # HMAC-SHA256 hex digest
     # "register" | "login" | "reset"
     purpose: Mapped[str] = mapped_column(String(20), nullable=False, default="login")
     expires_at: Mapped[float] = mapped_column(Float, nullable=False)

@@ -4,6 +4,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.loan import Loan
 from app.models.month_entry import MonthEntry
 from app.schemas.month_entry import MonthEntryCreate, MonthEntryUpdate, MonthEntryUpsert
 
@@ -16,15 +17,20 @@ class MonthEntryRepository:
 
     # ── Reads ────────────────────────────────────────────────────────────────
 
-    async def get_all(self) -> list[MonthEntry]:
+    async def get_all(self, user_id: str) -> list[MonthEntry]:
         result = await self.session.execute(
-            select(MonthEntry).order_by(MonthEntry.month_key, MonthEntry.loan_id)
+            select(MonthEntry)
+            .join(Loan, MonthEntry.loan_id == Loan.id)
+            .where(Loan.user_id == user_id)
+            .order_by(MonthEntry.month_key, MonthEntry.loan_id)
         )
         return list(result.scalars().all())
 
-    async def get_all_for_month(self, month_key: str) -> list[MonthEntry]:
+    async def get_all_for_month(self, month_key: str, user_id: str) -> list[MonthEntry]:
         result = await self.session.execute(
-            select(MonthEntry).where(MonthEntry.month_key == month_key)
+            select(MonthEntry)
+            .join(Loan, MonthEntry.loan_id == Loan.id)
+            .where(MonthEntry.month_key == month_key, Loan.user_id == user_id)
         )
         return list(result.scalars().all())
 
@@ -50,10 +56,21 @@ class MonthEntryRepository:
     async def get_by_id(self, entry_id: str) -> MonthEntry | None:
         return await self.session.get(MonthEntry, entry_id)
 
-    async def get_all_month_keys(self) -> list[str]:
-        """Sorted list of distinct month_key values (newest first)."""
+    async def get_by_id_for_user(self, entry_id: str, user_id: str) -> MonthEntry | None:
+        """Fetch an entry only if it belongs to the given user (via its loan)."""
+        result = await self.session.execute(
+            select(MonthEntry)
+            .join(Loan, MonthEntry.loan_id == Loan.id)
+            .where(MonthEntry.id == entry_id, Loan.user_id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_all_month_keys(self, user_id: str) -> list[str]:
+        """Sorted list of distinct month_key values for the user (newest first)."""
         result = await self.session.execute(
             select(MonthEntry.month_key)
+            .join(Loan, MonthEntry.loan_id == Loan.id)
+            .where(Loan.user_id == user_id)
             .distinct()
             .order_by(MonthEntry.month_key.desc())
         )

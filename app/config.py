@@ -4,8 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     database_url: str
 
-    # JWT
-    secret_key: str = "change-this-secret-key-in-production"
+    # JWT — SECRET_KEY must be set explicitly; the app will refuse to start without it.
+    secret_key: str
     token_expire_days: int = 7
 
     # CORS

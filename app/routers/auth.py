@@ -1,12 +1,11 @@
 import time
 import uuid
-from collections import defaultdict
 from datetime import datetime, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
@@ -24,6 +23,7 @@ from app.utils.auth_utils import (
     create_access_token,
     decode_access_token,
     generate_otp,
+    hash_otp,
     otp_expires_at,
     otp_is_expired,
 )
@@ -117,7 +117,7 @@ async def _save_otp(session: AsyncSession, email: str, code: str, purpose: str) 
     otp_row = OTPCode(
         id=str(uuid.uuid4()),
         email=email,
-        code=code,
+        code=hash_otp(code),  # store HMAC hash, never plaintext
         purpose=purpose,
         expires_at=otp_expires_at(),
         used=False,
@@ -133,7 +133,7 @@ async def _verify_otp(
     result = await session.execute(
         select(OTPCode).where(
             OTPCode.email == email,
-            OTPCode.code == code,
+            OTPCode.code == hash_otp(code),  # compare against stored HMAC hash
             OTPCode.purpose == purpose,
             OTPCode.used == False,  # noqa: E712
         )
@@ -158,7 +158,7 @@ async def register_send_otp(
     session: AsyncSession = Depends(get_db),
 ):
     email = body.email.strip().lower()
-    _check_otp_send_rate(email)
+    await _check_otp_send_rate(email, session)
     # Check if email already registered
     result = await session.execute(select(User).where(User.email == email))
     existing = result.scalar_one_or_none()
@@ -219,16 +219,17 @@ async def login_send_otp(
     session: AsyncSession = Depends(get_db),
 ):
     email = body.email.strip().lower()
-    _check_otp_send_rate(email)
+    await _check_otp_send_rate(email, session)
     result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=404, detail="לא נמצא משתמש עם מייל זה")
-
-    code = generate_otp()
-    await _save_otp(session, email, code, "login")
-    dev_code = await send_otp_email(email, code, "login")
-    response: dict = {"detail": "קוד נשלח למייל"}
+    # Always return 200 regardless of whether the email exists — prevents user enumeration.
+    # An OTP is only generated and sent when the user actually exists.
+    dev_code: str | None = None
+    if user and user.is_active:
+        code = generate_otp()
+        await _save_otp(session, email, code, "login")
+        dev_code = await send_otp_email(email, code, "login")
+    response: dict = {"detail": "אם המייל רשום, קוד נשלח אליו"}
     if dev_code is not None:
         response["dev_code"] = dev_code
     return response
@@ -267,7 +268,7 @@ async def reset_send_otp(
     session: AsyncSession = Depends(get_db),
 ):
     email = body.email.strip().lower()
-    _check_otp_send_rate(email)
+    await _check_otp_send_rate(email, session)
     result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     # Always return 200 even if email unknown (prevent user enumeration)

@@ -98,7 +98,6 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "login") -
         return None
     except Exception as exc:
         logger.error("[EMAIL ERROR] Failed to send OTP email to %s: %s", to_email, exc)
-        # Only expose dev_code in debug/development mode
-        if settings.debug:
-            return otp_code
+        # Never expose the OTP code in the API response when SMTP is configured,
+        # even in debug mode — a production SMTP setup means a production environment.
         return None
