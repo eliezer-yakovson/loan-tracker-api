@@ -16,8 +16,10 @@ class CategoryRepository:
 
     # ── Reads ────────────────────────────────────────────────────────────────
 
-    async def get_all(self) -> list[Category]:
-        result = await self.session.execute(select(Category).order_by(Category.name))
+    async def get_all(self, user_id: str) -> list[Category]:
+        result = await self.session.execute(
+            select(Category).where(Category.user_id == user_id).order_by(Category.name)
+        )
         return list(result.scalars().all())
 
     async def get_by_id(self, category_id: str) -> Category | None:
@@ -25,9 +27,10 @@ class CategoryRepository:
 
     # ── Writes ───────────────────────────────────────────────────────────────
 
-    async def create(self, data: CategoryCreate) -> Category:
+    async def create(self, data: CategoryCreate, user_id: str) -> Category:
         category = Category(
             id=data.id or str(uuid.uuid4()),
+            user_id=user_id,
             name=data.name,
         )
         self.session.add(category)
@@ -35,12 +38,12 @@ class CategoryRepository:
         await self.session.refresh(category)
         return category
 
-    async def upsert(self, data: CategoryCreate) -> Category:
+    async def upsert(self, data: CategoryCreate, user_id: str) -> Category:
         """Insert or update by primary key — used during full-state sync."""
         entry_id = data.id or str(uuid.uuid4())
         stmt = (
             pg_insert(Category)
-            .values(id=entry_id, name=data.name)
+            .values(id=entry_id, user_id=user_id, name=data.name)
             .on_conflict_do_update(
                 index_elements=["id"],
                 set_={"name": data.name},
