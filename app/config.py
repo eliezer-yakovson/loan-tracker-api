@@ -14,13 +14,11 @@ class Settings(BaseSettings):
     # Development mode — set DEBUG=true only locally; never in production
     debug: bool = False
 
-    # SMTP (email for OTP codes)
-    smtp_host: str = ""
-    smtp_port: int = 465
-    smtp_user: str = ""
-    smtp_password: str = ""
-    smtp_from: str = ""
-    smtp_from_name: str = "מעקב הלוואות"
+    # Email — Brevo (formerly Sendinblue) HTTP API
+    # Sign up free at brevo.com → Settings → API Keys
+    brevo_api_key: str = ""
+    email_from: str = ""        # verified sender address in Brevo
+    email_from_name: str = "מעקב הלוואות"
 
     model_config = SettingsConfigDict(
         env_file=".env",

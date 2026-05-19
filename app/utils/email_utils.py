@@ -1,9 +1,7 @@
 import logging
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Optional
 
-import aiosmtplib
+import httpx
 
 from app.config import settings
 
@@ -14,6 +12,8 @@ _PURPOSE_LABELS = {
     "login": "כניסה לחשבון",
     "reset": "איפוס גישה",
 }
+
+_BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 
 def _build_html(otp_code: str, purpose: str) -> str:
@@ -74,14 +74,14 @@ def _build_html(otp_code: str, purpose: str) -> str:
 
 async def send_otp_email(to_email: str, otp_code: str, purpose: str = "login") -> Optional[str]:
     """
-    Send OTP email via SMTP.
-    Falls back to console log when SMTP is not configured (development mode).
+    Send OTP email via Brevo HTTP API.
+    Falls back to console log when Brevo is not configured (development mode).
     Returns the OTP code itself in dev mode (so the API can expose it to the UI).
     """
     label = _PURPOSE_LABELS.get(purpose, "אימות")
 
-    if not settings.smtp_host or not settings.smtp_user:
-        # SMTP not configured — log to console for server-side visibility
+    if not settings.brevo_api_key or not settings.email_from:
+        # Not configured — log to console for local dev visibility
         logger.warning(
             "[EMAIL DEV FALLBACK] To: %s | Purpose: %s | OTP: %s",
             to_email,
@@ -91,31 +91,29 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "login") -
         print(f"\n{'='*50}")
         print(f"[OTP DEV] Email: {to_email}  |  Purpose: {purpose}  |  Code: {otp_code}")
         print(f"{'='*50}\n")
-        # Only expose code in API response when debug mode is on
         return otp_code if settings.debug else None
 
-    message = MIMEMultipart("alternative")
-    message["Subject"] = f"קוד אימות ({label}) — מעקב הלוואות"
-    message["From"] = f"{settings.smtp_from_name} <{settings.smtp_from or settings.smtp_user}>"
-    message["To"] = to_email
-
-    plain = f"קוד האימות שלך: {otp_code}\nהקוד תקף ל-10 דקות."
-    message.attach(MIMEText(plain, "plain", "utf-8"))
-    message.attach(MIMEText(_build_html(otp_code, purpose), "html", "utf-8"))
+    payload = {
+        "sender": {"name": settings.email_from_name, "email": settings.email_from},
+        "to": [{"email": to_email}],
+        "subject": f"קוד אימות ({label}) — מעקב הלוואות",
+        "htmlContent": _build_html(otp_code, purpose),
+        "textContent": f"קוד האימות שלך: {otp_code}\nהקוד תקף ל-10 דקות.",
+    }
 
     try:
-        await aiosmtplib.send(
-            message,
-            hostname=settings.smtp_host,
-            port=settings.smtp_port,
-            username=settings.smtp_user,
-            password=settings.smtp_password,
-            use_tls=(settings.smtp_port == 465),
-            start_tls=(settings.smtp_port == 587),
-        )
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(
+                _BREVO_API_URL,
+                json=payload,
+                headers={
+                    "api-key": settings.brevo_api_key,
+                    "Content-Type": "application/json",
+                },
+            )
+            response.raise_for_status()
         return None
     except Exception as exc:
         logger.error("[EMAIL ERROR] Failed to send OTP email to %s: %s", to_email, exc)
-        # Never expose the OTP code in the API response when SMTP is configured,
-        # even in debug mode — a production SMTP setup means a production environment.
         return None
+

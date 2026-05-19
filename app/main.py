@@ -15,11 +15,11 @@ from app.routers import error_logs as error_logs_router
 
 def _validate_startup_security() -> None:
     """Fail fast if critical security settings are misconfigured."""
-    smtp_configured = bool(_settings.smtp_host and _settings.smtp_user)
+    email_configured = bool(_settings.brevo_api_key and _settings.email_from)
 
-    if smtp_configured and _settings.debug:
+    if email_configured and _settings.debug:
         raise RuntimeError(
-            "Security misconfiguration: DEBUG=true must not be used when SMTP is "
+            "Security misconfiguration: DEBUG=true must not be used when email is "
             "configured (production environment). Set DEBUG=false."
         )
 
