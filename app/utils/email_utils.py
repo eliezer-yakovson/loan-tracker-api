@@ -27,8 +27,25 @@ def _build_html(otp_code: str, purpose: str) -> str:
       <table width="480" style="background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.08);overflow:hidden">
         <tr>
           <td style="background:linear-gradient(135deg,#22b8c2,#0c5561);padding:28px 32px">
-            <h1 style="color:#fff;margin:0;font-size:1.4rem">מעקב הלוואות &#8362;</h1>
-            <p style="color:rgba(255,255,255,.8);margin:4px 0 0;font-size:.9rem">{label}</p>
+            <table cellpadding="0" cellspacing="0" style="border:0">
+              <tr>
+                <td style="vertical-align:middle;padding-left:12px">
+                  <svg width="46" height="46" viewBox="0 0 38 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="19" cy="19" r="18.5" fill="#1aa8b2"/>
+                    <rect x="7" y="23" width="5" height="8" rx="2.5" fill="rgba(255,255,255,0.5)"/>
+                    <rect x="14" y="18" width="5" height="13" rx="2.5" fill="rgba(255,255,255,0.7)"/>
+                    <rect x="21" y="15" width="5" height="16" rx="2.5" fill="rgba(255,255,255,0.88)"/>
+                    <rect x="28" y="20" width="4" height="11" rx="2" fill="rgba(255,255,255,0.6)"/>
+                    <circle cx="19" cy="10" r="5.5" fill="rgba(255,228,100,0.92)"/>
+                    <text x="19" y="10" text-anchor="middle" dominant-baseline="central" font-size="7" font-weight="bold" fill="#0c4a50" font-family="Arial,sans-serif">&#x20AA;</text>
+                  </svg>
+                </td>
+                <td style="vertical-align:middle;padding-right:12px">
+                  <h1 style="color:#fff;margin:0;font-size:1.4rem">מעקב הלוואות</h1>
+                  <p style="color:rgba(255,255,255,.8);margin:4px 0 0;font-size:.9rem">{label}</p>
+                </td>
+              </tr>
+            </table>
           </td>
         </tr>
         <tr>

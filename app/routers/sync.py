@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
+from app.models.category import Category
+from app.models.loan import Loan
 from app.models.month_entry import MonthEntry
 from app.models.user import User
 from app.repositories.category_repository import CategoryRepository
@@ -32,8 +34,8 @@ async def push_state(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Bulk-upsert the full app state sent by the React client, then return the
-    refreshed state from the database.
+    Full-state replacement: upsert what the client has, then delete anything
+    the client no longer has (reconcile), then return the refreshed state.
 
     Order matters: categories → loans → month_entries (FK chain).
     """
@@ -42,10 +44,20 @@ async def push_state(
     loan_repo = LoanRepository(db)
     entry_repo = MonthEntryRepository(db)
 
+    # ── Step 1: Upsert incoming records ────────────────────────────────────────
     for cat in data.categories:
         await cat_repo.upsert(cat, user_id)
 
+    # Build the set of category IDs this user actually owns after the upserts above.
+    # Any loan whose category_id is not in this set references a foreign category and
+    # must be dropped — otherwise a client could create a cross-user FK link.
+    user_cats_after_upsert = await cat_repo.get_all(user_id)
+    valid_cat_ids = {cat.id for cat in user_cats_after_upsert}
+
     for loan in data.loans:
+        if loan.category_id not in valid_cat_ids:
+            # Silently skip — raising would expose information about foreign IDs.
+            continue
         await loan_repo.upsert(loan, user_id)
 
     # Build the set of loan IDs that genuinely belong to this user AFTER the
@@ -60,15 +72,49 @@ async def push_state(
             continue
         await entry_repo.upsert(entry)
 
+    # ── Step 2: Reconcile — delete records absent from the client payload ──────
+    # This turns every push into a full-state replacement so that items deleted
+    # while offline (or when the fire-and-forget DELETE call was skipped / failed)
+    # are removed before the next pull, preventing "ghost" re-appearances.
+    incoming_cat_ids = {cat.id for cat in data.categories}
+    incoming_loan_ids = {loan.id for loan in data.loans}
+
+    # Delete orphaned categories. FK cascade removes their loans and month_entries.
+    # The user_id guard ensures we never touch another user's data.
+    if incoming_cat_ids:
+        await db.execute(
+            delete(Category)
+            .where(Category.user_id == user_id)
+            .where(Category.id.notin_(incoming_cat_ids))
+        )
+    else:
+        # Empty payload → remove all of this user's categories.
+        await db.execute(delete(Category).where(Category.user_id == user_id))
+
+    # Delete orphaned loans. FK cascade removes their month_entries.
+    # Loans under deleted categories are already gone via the cascade above;
+    # this handles loans deleted independently of their category.
+    if incoming_loan_ids:
+        await db.execute(
+            delete(Loan)
+            .where(Loan.user_id == user_id)
+            .where(Loan.id.notin_(incoming_loan_ids))
+        )
+    else:
+        await db.execute(delete(Loan).where(Loan.user_id == user_id))
+
     await db.commit()
 
-    user_loan_ids = list(user_loan_ids_set)
-    all_entries = await _get_entries_for_user(db, user_loan_ids)
+    # ── Step 3: Return the reconciled state ────────────────────────────────────
+    final_cats = await cat_repo.get_all(user_id)
+    final_loans = await loan_repo.get_all(user_id)
+    final_loan_ids = [loan.id for loan in final_loans]
+    all_entries = await _get_entries_for_user(db, final_loan_ids)
 
     return AppStateOut(
         selected_month=data.selected_month,
-        categories=await cat_repo.get_all(user_id),
-        loans=user_loans_after_upsert,
+        categories=final_cats,
+        loans=final_loans,
         month_entries=all_entries,
     )
 

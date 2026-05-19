@@ -27,10 +27,11 @@ def _validate_startup_security() -> None:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     _validate_startup_security()
-    # On startup: create any tables that don't exist yet.
-    # In production, use `alembic upgrade head` instead and remove this block.
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if _settings.debug:
+        # Development only: auto-create missing tables.
+        # In production always run `alembic upgrade head` before starting the server.
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     yield
 
 

@@ -5,11 +5,12 @@ from datetime import datetime, timezone
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
 from app.models.otp_code import OTPCode
+from app.models.otp_fail_attempt import OtpFailAttempt
 from app.models.user import User
 from app.schemas.auth import (
     RegisterRequest,
@@ -32,51 +33,70 @@ from app.utils.email_utils import send_otp_email
 router = APIRouter(prefix="/auth", tags=["auth"])
 bearer_scheme = HTTPBearer(auto_error=False)
 
-# ── In-memory OTP rate limiters ────────────────────────────────────────────────
-# Maps email -> list of send timestamps (last 10 minutes)
-_otp_send_times: dict[str, list[float]] = defaultdict(list)
+# ── DB-backed OTP rate limiters (durable across restarts and multiple workers) ─
+# NOTE: _OTP_SEND_WINDOW must equal the OTP TTL set in otp_expires_at() (600 s)
+# so that counting un-expired rows == counting sends in the last 10 minutes.
 _OTP_SEND_WINDOW = 600   # 10 minutes
 _OTP_SEND_MAX = 3        # max 3 OTP sends per window
 
-# Maps email -> [fail_count, window_start]
-_otp_fail_counts: dict[str, list] = defaultdict(lambda: [0, 0.0])
 _OTP_FAIL_WINDOW = 300   # 5 minutes
 _OTP_FAIL_MAX = 10       # max 10 failed attempts per window
 
 
-def _check_otp_send_rate(email: str) -> None:
-    now = time.monotonic()
-    times = _otp_send_times[email]
-    # Prune old timestamps
-    _otp_send_times[email] = [t for t in times if now - t < _OTP_SEND_WINDOW]
-    if len(_otp_send_times[email]) >= _OTP_SEND_MAX:
+async def _check_otp_send_rate(session: AsyncSession, email: str) -> None:
+    """Block if this email has sent >= _OTP_SEND_MAX OTPs in the last 10 minutes.
+
+    Uses otp_codes.expires_at as a creation-time proxy: because the OTP TTL equals
+    the send window (both 600 s), any OTP that has not yet expired was sent within
+    the current window.
+    """
+    now = time.time()
+    result = await session.execute(
+        select(func.count()).select_from(OTPCode).where(
+            OTPCode.email == email,
+            OTPCode.expires_at > now,
+        )
+    )
+    if result.scalar_one() >= _OTP_SEND_MAX:
         raise HTTPException(
             status_code=429,
             detail="שלחת יותר מדי קודות בזמן קצר. נסה שוב בעוד 10 דקות.",
         )
-    _otp_send_times[email].append(now)
 
 
-def _check_otp_fail_rate(email: str) -> None:
-    now = time.monotonic()
-    count, window_start = _otp_fail_counts[email]
-    if now - window_start > _OTP_FAIL_WINDOW:
-        _otp_fail_counts[email] = [0, now]
-        return
-    if count >= _OTP_FAIL_MAX:
+async def _check_otp_fail_rate(session: AsyncSession, email: str) -> None:
+    """Block if this email has >= _OTP_FAIL_MAX failures in the last 5 minutes."""
+    now = time.time()
+    result = await session.execute(
+        select(func.count()).select_from(OtpFailAttempt).where(
+            OtpFailAttempt.email == email,
+            OtpFailAttempt.created_at > now - _OTP_FAIL_WINDOW,
+        )
+    )
+    if result.scalar_one() >= _OTP_FAIL_MAX:
         raise HTTPException(
             status_code=429,
             detail="יותר מדי ניסיונות כושלים. נסה שוב בעוד 5 דקות.",
         )
 
 
-def _record_otp_fail(email: str) -> None:
-    now = time.monotonic()
-    count, window_start = _otp_fail_counts[email]
-    if now - window_start > _OTP_FAIL_WINDOW:
-        _otp_fail_counts[email] = [1, now]
-    else:
-        _otp_fail_counts[email] = [count + 1, window_start]
+async def _record_otp_fail(session: AsyncSession, email: str) -> None:
+    """Record a failed OTP attempt and prune entries outside the window.
+
+    Uses commit() (not flush()) so the row survives even though the caller
+    raises HTTPException immediately after.  FastAPI catches HTTPException and
+    returns a normal HTTP response, but the session context manager in get_db()
+    never issues an explicit commit for the error path — a plain flush() would
+    therefore be rolled back when the session closes.
+    """
+    now = time.time()
+    await session.execute(
+        delete(OtpFailAttempt).where(
+            OtpFailAttempt.created_at < now - _OTP_FAIL_WINDOW
+        )
+    )
+    session.add(OtpFailAttempt(id=str(uuid.uuid4()), email=email, created_at=now))
+    await session.commit()
 
 
 # ── Dependency: get current authenticated user ─────────────────────────────────
@@ -129,7 +149,7 @@ async def _save_otp(session: AsyncSession, email: str, code: str, purpose: str) 
 async def _verify_otp(
     session: AsyncSession, email: str, code: str, purpose: str
 ) -> OTPCode:
-    _check_otp_fail_rate(email)
+    await _check_otp_fail_rate(session, email)
     result = await session.execute(
         select(OTPCode).where(
             OTPCode.email == email,
@@ -140,10 +160,10 @@ async def _verify_otp(
     )
     otp_row = result.scalar_one_or_none()
     if not otp_row:
-        _record_otp_fail(email)
+        await _record_otp_fail(session, email)
         raise HTTPException(status_code=400, detail="קוד שגוי")
     if otp_is_expired(otp_row.expires_at):
-        _record_otp_fail(email)
+        await _record_otp_fail(session, email)
         raise HTTPException(status_code=400, detail="הקוד פג תוקף, שלח קוד חדש")
     otp_row.used = True
     await session.commit()
@@ -158,7 +178,7 @@ async def register_send_otp(
     session: AsyncSession = Depends(get_db),
 ):
     email = body.email.strip().lower()
-    await _check_otp_send_rate(email, session)
+    await _check_otp_send_rate(session, email)
     # Check if email already registered
     result = await session.execute(select(User).where(User.email == email))
     existing = result.scalar_one_or_none()
@@ -219,7 +239,7 @@ async def login_send_otp(
     session: AsyncSession = Depends(get_db),
 ):
     email = body.email.strip().lower()
-    await _check_otp_send_rate(email, session)
+    await _check_otp_send_rate(session, email)
     result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     # Always return 200 regardless of whether the email exists — prevents user enumeration.
@@ -268,7 +288,7 @@ async def reset_send_otp(
     session: AsyncSession = Depends(get_db),
 ):
     email = body.email.strip().lower()
-    await _check_otp_send_rate(email, session)
+    await _check_otp_send_rate(session, email)
     result = await session.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     # Always return 200 even if email unknown (prevent user enumeration)

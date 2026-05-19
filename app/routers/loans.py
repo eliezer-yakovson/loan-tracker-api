@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_db
 from app.models.user import User
+from app.repositories.category_repository import CategoryRepository
 from app.repositories.loan_repository import LoanRepository
 from app.routers.auth import get_current_user
 from app.schemas.loan import LoanCreate, LoanRead, LoanUpdate
@@ -41,6 +42,10 @@ async def create_loan(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    cat_repo = CategoryRepository(db)
+    cat = await cat_repo.get_by_id(data.category_id)
+    if not cat or cat.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Category not found or not owned by user")
     repo = LoanRepository(db)
     loan = await repo.create(data, current_user.id)
     await db.commit()
@@ -58,6 +63,11 @@ async def update_loan(
     loan = await repo.get_by_id(loan_id)
     if not loan or loan.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Loan not found")
+    if data.category_id is not None:
+        cat_repo = CategoryRepository(db)
+        cat = await cat_repo.get_by_id(data.category_id)
+        if not cat or cat.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Category not found or not owned by user")
     updated = await repo.update(loan_id, data)
     if not updated:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Loan not found")

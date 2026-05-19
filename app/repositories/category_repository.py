@@ -47,6 +47,7 @@ class CategoryRepository:
             .on_conflict_do_update(
                 index_elements=["id"],
                 set_={"name": data.name},
+                where=(Category.user_id == user_id),
             )
         )
         await self.session.execute(stmt)

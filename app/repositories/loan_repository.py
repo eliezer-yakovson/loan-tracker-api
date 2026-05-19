@@ -58,6 +58,7 @@ class LoanRepository:
             .on_conflict_do_update(
                 index_elements=["id"],
                 set_=set_values,
+                where=(Loan.user_id == user_id),
             )
         )
         await self.session.execute(stmt)

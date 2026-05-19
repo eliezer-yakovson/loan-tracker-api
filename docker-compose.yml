@@ -32,11 +32,12 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8002:8000"
+      - "8002:7860"
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql+asyncpg://loan_user:loan_pass@db:5432/loan_tracker
+      DEBUG: "false"
     depends_on:
       db:
         condition: service_healthy
