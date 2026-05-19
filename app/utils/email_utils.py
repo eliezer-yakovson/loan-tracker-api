@@ -110,7 +110,8 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "login") -
             port=settings.smtp_port,
             username=settings.smtp_user,
             password=settings.smtp_password,
-            use_tls=True,  # SSL on port 465
+            use_tls=(settings.smtp_port == 465),
+            start_tls=(settings.smtp_port == 587),
         )
         return None
     except Exception as exc:
