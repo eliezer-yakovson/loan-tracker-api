@@ -13,9 +13,11 @@ from app.models.otp_code import OTPCode
 from app.models.otp_fail_attempt import OtpFailAttempt
 from app.models.user import User
 from app.schemas.auth import (
+    PasswordLoginRequest,
     RegisterRequest,
     RegisterVerifyRequest,
     SendOTPRequest,
+    SetPasswordRequest,
     TokenResponse,
     UserOut,
     VerifyOTPRequest,
@@ -25,8 +27,10 @@ from app.utils.auth_utils import (
     decode_access_token,
     generate_otp,
     hash_otp,
+    hash_password,
     otp_expires_at,
     otp_is_expired,
+    verify_password,
 )
 from app.utils.email_utils import send_otp_email
 
@@ -216,6 +220,7 @@ async def register_verify(
         name=body.name,
         created_at=now,
         is_active=True,
+        password_hash=hash_password(body.password) if body.password else None,
     )
     session.add(user)
     await session.commit()
@@ -278,6 +283,50 @@ async def login_verify(
         name=user.name,
         is_admin=user.is_admin,
     )
+
+
+# ── Login with password (email + password, no OTP) ────────────────────────────
+
+@router.post("/login/password", response_model=TokenResponse, summary="כניסה עם מייל וסיסמה")
+async def login_password(
+    body: PasswordLoginRequest,
+    session: AsyncSession = Depends(get_db),
+):
+    email = body.email.strip().lower()
+    # Reuse the OTP failure limiter so brute-forcing a password is throttled too.
+    await _check_otp_fail_rate(session, email)
+
+    result = await session.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    # Single generic error for "no user", "no password set" and "wrong password"
+    # so an attacker cannot tell which emails exist or have a password.
+    if not user or not user.is_active or not verify_password(body.password, user.password_hash):
+        await _record_otp_fail(session, email)
+        raise HTTPException(status_code=401, detail="מייל או סיסמה שגויים")
+
+    token = create_access_token(user.id, user.email)
+    return TokenResponse(
+        access_token=token,
+        user_id=user.id,
+        email=user.email,
+        name=user.name,
+        is_admin=user.is_admin,
+    )
+
+
+# ── Set / change password (authenticated) ─────────────────────────────────────
+
+@router.post("/set-password", summary="הגדרת או שינוי סיסמה")
+async def set_password(
+    body: SetPasswordRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    current_user.password_hash = hash_password(body.password)
+    session.add(current_user)
+    await session.commit()
+    return {"detail": "הסיסמה נשמרה בהצלחה"}
 
 
 # ── Forgot / Reset (step 1: send OTP) ─────────────────────────────────────────

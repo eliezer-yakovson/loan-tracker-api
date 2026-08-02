@@ -38,6 +38,39 @@ def otp_is_expired(expires_at: float) -> bool:
     return time.time() > expires_at
 
 
+# ── Password (PBKDF2-HMAC-SHA256, stdlib only — no extra dependency) ────────────
+
+_PBKDF2_ITERATIONS = 200_000
+_PBKDF2_ALGO = "pbkdf2_sha256"
+
+
+def hash_password(password: str) -> str:
+    """Return a self-describing password hash: 'pbkdf2_sha256$iters$salt$hash'."""
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS
+    )
+    return f"{_PBKDF2_ALGO}${_PBKDF2_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def verify_password(password: str, stored: str | None) -> bool:
+    """Constant-time verify a plaintext password against a stored PBKDF2 hash."""
+    if not stored:
+        return False
+    try:
+        algo, iterations_s, salt_hex, hash_hex = stored.split("$")
+        if algo != _PBKDF2_ALGO:
+            return False
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(hash_hex)
+        dk = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt, int(iterations_s)
+        )
+        return hmac.compare_digest(dk, expected)
+    except (ValueError, TypeError):
+        return False
+
+
 # ── JWT ────────────────────────────────────────────────────────────────────────
 
 def create_access_token(user_id: str, email: str) -> str:

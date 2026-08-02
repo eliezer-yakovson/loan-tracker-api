@@ -15,3 +15,9 @@ class User(Base):
     created_at: Mapped[str] = mapped_column(String(30), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Optional password (PBKDF2 hash). NULL = user has only OTP/email login enabled.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    @property
+    def has_password(self) -> bool:
+        return bool(self.password_hash)
