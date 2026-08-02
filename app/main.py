@@ -70,6 +70,12 @@ app.include_router(admin_router.router)
 app.include_router(error_logs_router.router)
 
 
+@app.get("/", tags=["health"])
+async def root():
+    """Root endpoint so probes hitting '/' get 200 instead of 404."""
+    return {"status": "ok", "service": "Loan Tracker API", "docs": "/docs"}
+
+
 @app.get("/health", tags=["health"])
 async def health_check():
     return {"status": "ok"}
